@@ -11,7 +11,6 @@ import {
   View,
   Platform,
 } from 'react-native';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Location from 'expo-location';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
@@ -22,17 +21,14 @@ import type {
   RootStackParamList,
 } from '../types/booking';
 
-type Props = NativeStackScreenProps<
-  RootStackParamList,
-  'BookInspection'
->;
+import {
+  loadBookingDraft,
+  saveBookingDraft,
+} from '../storage/bookingDraft';
 
-const DRAFT_KEY = '@autoconx/booking-draft';
+type Props = NativeStackScreenProps<RootStackParamList, 'BookInspection'>;
 
-const inspectionOptions: {
-  label: string;
-  value: InspectionType;
-}[] = [
+const inspectionOptions: { label: string; value: InspectionType }[] = [
   { label: 'Basic', value: 'BASIC' },
   { label: 'Comprehensive', value: 'COMPREHENSIVE' },
   { label: 'Pre-purchase', value: 'PRE_PURCHASE' },
@@ -84,56 +80,68 @@ export default function BookInspectionScreen({
   const [loadingDraft, setLoadingDraft] = useState(true);
   const [gettingLocation, setGettingLocation] = useState(false);
 
-  const mountedRef = useRef(true);
+  const mountedRef = useRef(false);
   const locationRequestRef = useRef(false);
+  const draftReadyRef = useRef(false);
+  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
+    let cancelled = false;
+
     mountedRef.current = true;
+    draftReadyRef.current = false;
+    setLoadingDraft(true);
 
     async function restoreDraft() {
       try {
-        const saved = await AsyncStorage.getItem(DRAFT_KEY);
+        const draft = await loadBookingDraft(vehicle.id);
 
-        if (!saved || !mountedRef.current) return;
+        if (cancelled) return;
 
-        const draft = JSON.parse(saved) as Partial<BookingDraft>;
+        if (draft) {
+          if (
+            inspectionOptions.some(
+              option => option.value === draft.inspectionType,
+            )
+          ) {
+            setInspectionType(draft.inspectionType);
+          }
 
-        if (
-          draft.inspectionType &&
-          inspectionOptions.some(
-            (option) => option.value === draft.inspectionType,
-          )
-        ) {
-          setInspectionType(draft.inspectionType);
-        }
-
-        if (typeof draft.address === 'string') {
           setAddress(draft.address);
-        }
-
-        if (typeof draft.date === 'string') {
           setSelectedDate(parseDate(draft.date));
-        }
-
-        if (typeof draft.notes === 'string') {
           setNotes(draft.notes);
         }
       } catch {
-        // Continue with default form values.
+        if (!cancelled) {
+          Alert.alert(
+            'Saved data unavailable',
+            'Your saved booking details could not be loaded.',
+          );
+        }
       } finally {
-        if (mountedRef.current) setLoadingDraft(false);
+        if (!cancelled) {
+          draftReadyRef.current = true;
+          setLoadingDraft(false);
+        }
       }
     }
 
     void restoreDraft();
 
     return () => {
+      cancelled = true;
       mountedRef.current = false;
+      draftReadyRef.current = false;
+
+      if (saveTimerRef.current) {
+        clearTimeout(saveTimerRef.current);
+        saveTimerRef.current = null;
+      }
     };
-  }, []);
+  }, [vehicle.id]);
 
   useEffect(() => {
-    if (loadingDraft) return;
+    if (loadingDraft || !draftReadyRef.current) return;
 
     const draft: BookingDraft = {
       inspectionType,
@@ -142,12 +150,39 @@ export default function BookInspectionScreen({
       notes,
     };
 
-    void AsyncStorage.setItem(DRAFT_KEY, JSON.stringify(draft)).catch(
-      () => {
-        // Draft persistence is optional; the form remains usable.
-      },
-    );
-  }, [inspectionType, address, selectedDate, notes, loadingDraft]);
+    if (saveTimerRef.current) {
+      clearTimeout(saveTimerRef.current);
+    }
+
+    saveTimerRef.current = setTimeout(() => {
+      if (!mountedRef.current || !draftReadyRef.current) return;
+
+      void saveBookingDraft(vehicle.id, draft).catch(() => {
+        if (mountedRef.current) {
+          Alert.alert(
+            'Save failed',
+            'Booking details could not be saved on this device.',
+          );
+        }
+      });
+
+      saveTimerRef.current = null;
+    }, 250);
+
+    return () => {
+      if (saveTimerRef.current) {
+        clearTimeout(saveTimerRef.current);
+        saveTimerRef.current = null;
+      }
+    };
+  }, [
+    vehicle.id,
+    inspectionType,
+    address,
+    selectedDate,
+    notes,
+    loadingDraft,
+  ]);
 
   async function useCurrentLocation() {
     if (locationRequestRef.current) return;
@@ -176,6 +211,8 @@ export default function BookInspectionScreen({
         longitude: position.coords.longitude,
       });
 
+      if (!mountedRef.current) return;
+
       const place = results[0];
 
       if (place) {
@@ -189,10 +226,12 @@ export default function BookInspectionScreen({
           place.country,
         ]
           .filter(Boolean)
-          .filter((part, index, all) => all.indexOf(part) === index)
+          .filter(
+            (part, index, all) => all.indexOf(part) === index,
+          )
           .join(', ');
 
-        if (mountedRef.current && formattedAddress) {
+        if (formattedAddress) {
           setAddress(formattedAddress);
         } else {
           Alert.alert(
@@ -207,13 +246,18 @@ export default function BookInspectionScreen({
         );
       }
     } catch {
-      Alert.alert(
-        'Location error',
-        'Could not get your location. Please enter the address manually.',
-      );
+      if (mountedRef.current) {
+        Alert.alert(
+          'Location error',
+          'Could not get your location. Please enter the address manually.',
+        );
+      }
     } finally {
       locationRequestRef.current = false;
-      if (mountedRef.current) setGettingLocation(false);
+
+      if (mountedRef.current) {
+        setGettingLocation(false);
+      }
     }
   }
 
@@ -221,7 +265,10 @@ export default function BookInspectionScreen({
     const trimmedAddress = address.trim();
 
     if (!trimmedAddress) {
-      Alert.alert('Address required', 'Please enter the inspection address.');
+      Alert.alert(
+        'Address required',
+        'Please enter the inspection address.',
+      );
       return;
     }
 
@@ -242,7 +289,9 @@ export default function BookInspectionScreen({
     return (
       <View style={styles.loadingContainer}>
         <ActivityIndicator size="large" color="#2563EB" />
-        <Text style={styles.loadingText}>Loading booking form...</Text>
+        <Text style={styles.loadingText}>
+          Loading booking form...
+        </Text>
       </View>
     );
   }
@@ -253,22 +302,27 @@ export default function BookInspectionScreen({
       contentContainerStyle={styles.container}
     >
       <Text style={styles.eyebrow}>AUTOCONX INSPECTIONS</Text>
+
       <Text style={styles.title}>Book Inspection</Text>
+
       <Text style={styles.subtitle}>
         Enter your preferred inspection details.
       </Text>
 
       <View style={styles.vehicleCard}>
         <Text style={styles.fieldLabel}>SELECTED VEHICLE</Text>
+
         <Text style={styles.vehicleName}>
           {vehicle.year} {vehicle.make} {vehicle.model}
         </Text>
+
         <Text style={styles.mutedText}>{vehicle.bodyType}</Text>
       </View>
 
       <Text style={styles.fieldLabel}>INSPECTION TYPE</Text>
+
       <View style={styles.optionsContainer}>
-        {inspectionOptions.map((option) => {
+        {inspectionOptions.map(option => {
           const selected = inspectionType === option.value;
 
           return (
@@ -305,6 +359,7 @@ export default function BookInspectionScreen({
       </View>
 
       <Text style={styles.fieldLabel}>INSPECTION ADDRESS</Text>
+
       <TextInput
         value={address}
         onChangeText={setAddress}
@@ -341,6 +396,7 @@ export default function BookInspectionScreen({
         style={styles.dateButton}
       >
         <Text style={styles.calendarIcon}>▦</Text>
+
         <Text style={styles.dateButtonText}>
           {selectedDate.toLocaleDateString('en-GB', {
             day: '2-digit',
@@ -348,6 +404,7 @@ export default function BookInspectionScreen({
             year: 'numeric',
           })}
         </Text>
+
         <Text style={styles.changeDateText}>Choose date</Text>
       </Pressable>
 
@@ -388,7 +445,10 @@ export default function BookInspectionScreen({
         Select a date today or later.
       </Text>
 
-      <Text style={styles.fieldLabel}>ADDITIONAL NOTES (OPTIONAL)</Text>
+      <Text style={styles.fieldLabel}>
+        ADDITIONAL NOTES (OPTIONAL)
+      </Text>
+
       <TextInput
         value={notes}
         onChangeText={setNotes}

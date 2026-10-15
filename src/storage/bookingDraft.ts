@@ -1,54 +1,67 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { BookingDraft } from '../types/booking';
 
-const DRAFT_KEY = '@autoconx/booking-draft';
+const LEGACY_KEY = '@autoconx/booking-draft';
+const DRAFT_PREFIX = '@autoconx/booking-draft:';
 
-export async function saveBookingDraft(
-  draft: BookingDraft,
-): Promise<void> {
-  await AsyncStorage.setItem(DRAFT_KEY, JSON.stringify(draft));
+function isValidDraft(value: unknown): value is BookingDraft {
+  if (typeof value !== 'object' || value === null) return false;
+
+  const draft = value as Partial<BookingDraft>;
+
+  return (
+    ['BASIC', 'COMPREHENSIVE', 'PRE_PURCHASE'].includes(
+      draft.inspectionType as string,
+    ) &&
+    typeof draft.address === 'string' &&
+    typeof draft.date === 'string' &&
+    typeof draft.notes === 'string'
+  );
 }
 
-export async function loadBookingDraft(): Promise<BookingDraft | null> {
+export async function saveBookingDraft(
+  vehicleId: string,
+  draft: BookingDraft,
+): Promise<void> {
+  await AsyncStorage.setItem(
+    `${DRAFT_PREFIX}${vehicleId}`,
+    JSON.stringify(draft),
+  );
+}
+
+export async function loadBookingDraft(
+  vehicleId: string,
+): Promise<BookingDraft | null> {
+  const vehicleKey = `${DRAFT_PREFIX}${vehicleId}`;
+
   try {
-    const storedDraft = await AsyncStorage.getItem(DRAFT_KEY);
+    // First, load this vehicle's own saved draft.
+    const storedDraft = await AsyncStorage.getItem(vehicleKey);
 
-    if (!storedDraft) {
-      return null;
+    if (storedDraft) {
+      const parsed: unknown = JSON.parse(storedDraft);
+      return isValidDraft(parsed) ? parsed : null;
     }
+    
+    const legacyDraft = await AsyncStorage.getItem(LEGACY_KEY);
 
-    const parsed: unknown = JSON.parse(storedDraft);
+    if (!legacyDraft) return null;
 
-    if (
-      typeof parsed !== 'object' ||
-      parsed === null ||
-      !('inspectionType' in parsed) ||
-      !('address' in parsed) ||
-      !('date' in parsed) ||
-      !('notes' in parsed)
-    ) {
-      return null;
-    }
+    const parsed: unknown = JSON.parse(legacyDraft);
 
-    const draft = parsed as BookingDraft;
+    if (!isValidDraft(parsed)) return null;
 
-    if (
-      !['BASIC', 'COMPREHENSIVE', 'PRE_PURCHASE'].includes(
-        draft.inspectionType,
-      ) ||
-      typeof draft.address !== 'string' ||
-      typeof draft.date !== 'string' ||
-      typeof draft.notes !== 'string'
-    ) {
-      return null;
-    }
+    await AsyncStorage.setItem(vehicleKey, JSON.stringify(parsed));
+    await AsyncStorage.removeItem(LEGACY_KEY);
 
-    return draft;
+    return parsed;
   } catch {
     return null;
   }
 }
 
-export async function clearBookingDraft(): Promise<void> {
-  await AsyncStorage.removeItem(DRAFT_KEY);
+export async function clearBookingDraft(
+  vehicleId: string,
+): Promise<void> {
+  await AsyncStorage.removeItem(`${DRAFT_PREFIX}${vehicleId}`);
 }

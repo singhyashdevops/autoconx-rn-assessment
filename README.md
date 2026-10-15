@@ -125,6 +125,14 @@ The current implementation uses local vehicle data and a mock booking submission
 - Add automated tests for navigation and booking workflows.
 - Improve accessibility and localization.
 
+## AI Assistance
+
+AI tools were used as a development aid during the implementation of this assessment. They helped with code suggestions, debugging, understanding React Native and Expo concepts, and reviewing implementation approaches.
+
+The application was configured, built, and tested on an Android device. The final implementation was reviewed and validated against the required booking workflow.
+
+AI assistance was used as a productivity tool; the developer remains responsible for understanding, reviewing, and verifying the submitted code.
+
 ## Repository
 
 [AutoConX — GitHub Repository](https://github.com/singhyashdevops/autoconx-rn-assessment)
